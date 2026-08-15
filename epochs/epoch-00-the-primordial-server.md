@@ -83,6 +83,22 @@ That's a real production-grade HTTP/1.1 server. Not a toy — the *same* `node:h
 
 This section is the entire point of the epoch. Read it slowly.
 
+```mermaid
+sequenceDiagram
+    participant C as Client (curl)
+    participant OS as OS kernel
+    participant P as Node HTTP parser
+    participant H as Your callback
+    C->>OS: TCP connect to :3000
+    OS->>P: socket handed to Node
+    C->>P: request HEAD (method, path, headers)
+    Note over P: parses bytes until head is complete
+    P->>H: invoke (req, res) — BODY MAY NOT HAVE ARRIVED YET
+    C--)H: body chunks stream in later (req is a readable stream)
+    H->>C: res.end(html) — status + headers + body
+    Note over C,H: connection stays open (keep-alive) for the next request
+```
+
 ### The socket, the parser, the callback
 
 1. `server.listen(3000)` asks the OS to **bind** a TCP socket to port 3000 and start accepting connections. Ports below 1024 need elevated privileges — one reason apps run on 3000/8080 and let a load balancer own port 443.

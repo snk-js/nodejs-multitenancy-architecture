@@ -84,6 +84,19 @@ Rename tasks.title → tasks.summary, with zero downtime:
   3. CONTRACT  (next release) migration: DROP COLUMN title    (nothing reads it anymore)
 ```
 
+```mermaid
+flowchart TD
+    subgraph naive ["❌ big-bang rename"]
+        N1["deploy: RENAME title→summary<br/>+ new code, same release"] --> N2["rolling deploy in progress:<br/>OLD instances still SELECT title"] --> N3(["💥 crashes until rollout completes<br/>(and rollback re-breaks the NEW code)"])
+    end
+    subgraph ec ["✅ expand / contract"]
+        E1["1 EXPAND (migration):<br/>ADD summary · backfill ·<br/>sync trigger title↔summary"] --> E2["2 TRANSITION (deploy):<br/>code writes both, reads summary"] --> E3["3 CONTRACT (next release):<br/>DROP title — nothing reads it"]
+        E1 -.- C1["old code untouched: title still there"]
+        E2 -.- C2["old & new code BOTH valid<br/>against the same schema"]
+        E3 -.- C3["provably dead column removed"]
+    end
+```
+
 Rules that fall out: migrations deploy *before* the code that needs them; every migration must be compatible with the *currently running* code; big-table backfills run in batches (a single `UPDATE` on 50M rows takes locks and replication lag you don't want to meet); and "rollback" for schema is *roll forward through the phases*, which is why `down` migrations stopped being the plan back in Epoch 03. Expand/contract feels bureaucratic exactly once — the first time you watch a rename ship with zero 500s.
 
 Deployment strategy footnote: rolling is our default; blue/green (two full stacks, instant switch) and canary (1% → 10% → 100%, watching Epoch 10's SLO dashboards — this is *why* deploy markers belong on dashboards) are refinements of the same drain-and-gate machinery, not different worlds.

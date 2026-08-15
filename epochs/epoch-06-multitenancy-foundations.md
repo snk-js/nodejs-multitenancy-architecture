@@ -104,6 +104,21 @@ export async function tenantPlugin(app: FastifyInstance) {
 }
 ```
 
+The full resolution pipeline — note that the client-controlled `Host` header only ever *names* a workspace; the memberships table decides:
+
+```mermaid
+flowchart TD
+    R["request to acme.trellis.app<br/>cookie: session=…"] --> A["auth hook 🛡️<br/>session token → SHA-256 → sessions table"]
+    A -->|no valid session| E401["401"]
+    A -->|"req.user = {id}"| T["tenant hook"]
+    T --> SD{"subdomain in Host?"}
+    SD -->|none| E400["400 workspace not specified"]
+    SD -->|"'acme' (a CLAIM, not an authorization)"| M["ONE query:<br/>workspaces ⋈ memberships<br/>WHERE slug='acme' AND user_id=req.user.id"]
+    M -->|no row| E404["404 🛡️<br/>same answer for 'no such workspace'<br/>and 'not a member'"]
+    M -->|row found| CTX["req.tenant = {id, slug, role}<br/>published into AsyncLocalStorage"]
+    CTX --> H["handler → services → repositories<br/>all read tenant from context, no param-threading"]
+```
+
 🛡️ **Trust nothing client-controlled as authorization.** The `Host` header names the *venue*; the membership row grants *entry*. Skipping the membership check — "the workspace id is right there in the URL/header" — is how the classic cross-tenant vulnerability class (an IDOR at tenant scale) ships. And never accept a raw workspace-id header from browsers as the authz input: headers are attacker-controlled; database rows are not.
 
 (Local dev: `*.localtest.me` and friends resolve to `127.0.0.1`, so `acme.localtest.me:3000` works with zero DNS setup.)

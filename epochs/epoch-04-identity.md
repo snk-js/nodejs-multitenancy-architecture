@@ -145,6 +145,40 @@ app.post("/auth/logout", async (req, reply) => {
 });
 ```
 
+The whole credential story in one sequence — note where hashing happens, what the cookie carries, and what the database never sees:
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant S as Trellis API
+    participant DB as Postgres
+
+    rect rgb(235, 244, 255)
+    note over B,DB: LOGIN
+    B->>S: POST /auth/login {email, password}
+    S->>DB: SELECT user by email
+    alt user missing
+        S->>S: verify against DUMMY hash 🛡️ (same timing)
+    else user found
+        S->>S: argon2.verify(stored hash, password) — slow ON PURPOSE
+    end
+    S->>S: token = 256 random bits (CSPRNG)
+    S->>DB: INSERT sessions(SHA-256(token), …) 🛡️ hash at rest
+    S->>B: Set-Cookie: session=token<br/>httpOnly · secure · sameSite=lax
+    end
+
+    rect rgb(235, 255, 240)
+    note over B,DB: EVERY AUTHENTICATED REQUEST
+    B->>S: GET /api/tasks (cookie rides along)
+    S->>DB: SELECT sessions WHERE token_hash=SHA-256(cookie) AND expires_at > now()
+    alt session row exists
+        S->>B: 200 (req.user populated)
+    else deleted or expired
+        S->>B: 401 — instant revocation: the row IS the session
+    end
+    end
+```
+
 The security choices, unpacked:
 
 - **Account enumeration.** "Invalid email or password" — never "no such user" — and the dummy-hash trick keeps *timing* from telling the two apart (a missing user would otherwise return in 2ms vs ~50ms for a real hash check). Enumeration feels minor until you realize attacker step 1 is always "build a list of valid emails."

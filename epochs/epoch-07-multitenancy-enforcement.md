@@ -83,6 +83,42 @@ export async function withTenantDb<T>(fn: (db: Db) => Promise<T>): Promise<T> {
 }
 ```
 
+The lifecycle of one tenant-scoped request — watch where the stamp is applied, where it's checked, and where it dies:
+
+```mermaid
+sequenceDiagram
+    participant H as Handler
+    participant W as withTenantDb
+    participant P as Pool
+    participant PG as Postgres (as trellis_app)
+
+    H->>W: withTenantDb(fn)
+    W->>W: getTenant() — throws if context missing 🛡️
+    W->>P: connect()
+    P->>W: pooled client
+    W->>PG: BEGIN
+    W->>PG: SELECT set_config('app.tenant_id', $1, true)
+    Note over PG: parameterized (injection-safe) ·<br/>true = transaction-local (pool-safe)
+    W->>PG: fn's queries (repositories, unchanged)
+    Note over PG: EVERY row filtered by policy:<br/>workspace_id = current_setting('app.tenant_id')::uuid<br/>USING gates reads · WITH CHECK gates writes
+    W->>PG: COMMIT (or ROLLBACK on throw)
+    Note over PG: the tenant stamp DIES here —<br/>next borrower of this connection starts clean
+    W->>P: release()
+```
+
+And the failure-mode inversion that justifies the whole epoch:
+
+```mermaid
+flowchart LR
+    subgraph before ["Epoch 06: convention only"]
+        B1["engineer forgets<br/>WHERE workspace_id"] --> B2["query returns<br/>EVERY tenant's rows"] --> B3(["cross-tenant leak 🔥"])
+    end
+    subgraph after ["Epoch 07: RLS underneath"]
+        A1["engineer forgets<br/>WHERE workspace_id"] --> A2["policy still filters<br/>inside Postgres"] --> A3(["correct rows, wrong nothing"])
+        A4["context never set"] --> A5["current_setting → NULL<br/>matches NOTHING"] --> A6(["zero rows — fails SAFE"])
+    end
+```
+
 Layers of intent packed in here:
 
 - **Parameterized `set_config`, not `SET LOCAL app.tenant_id = '${id}'`.** `SET` doesn't take bind parameters; interpolating would reopen Epoch 03's injection door at the most security-critical line in the codebase. `set_config()` is an ordinary function — parameterizable.

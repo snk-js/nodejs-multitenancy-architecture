@@ -81,6 +81,26 @@ POST /api/invites ......................................... 1,910ms
 
 That `COMMIT` span converts "Trellis was slow" into a *specific* database question in one glance — the class of insight logs structurally cannot give, because no single log line *contains* the shape of the request. Two practices complete the picture:
 
+How one identity thread stitches every pillar together across process boundaries — the same `reqId`/`tenantId` pair appears in logs, spans, and metrics labels, which is what makes "what happened to Acme's request?" a single query:
+
+```mermaid
+flowchart LR
+    subgraph api ["API process"]
+        REQ["request<br/>reqId minted"] --> ALS["AsyncLocalStorage<br/>{reqId, userId, tenantId}"]
+        ALS --> LG1["every pino line<br/>(mixin stamps ids)"]
+        ALS --> SP1["every OTel span<br/>(auto-instrumented)"]
+        ALS --> MT1["RED metrics<br/>labels: route, tenant"]
+        ALS --> ENQ["job payload:<br/>{tenantId, requestId, traceparent}"]
+    end
+    subgraph worker ["Worker process (later, elsewhere)"]
+        ENQ -.->|"queue hop — ALS does NOT survive,<br/>the payload carries the thread 🛡️"| RB["context rebuilt +<br/>tenant re-validated"]
+        RB --> LG2["worker log lines<br/>same reqId/tenantId"]
+        RB --> SP2["worker spans attach<br/>to the SAME trace"]
+    end
+    LG1 & LG2 --> Q1(["one log query: the whole story"])
+    SP1 & SP2 --> Q2(["one trace: request → outbox → relay → worker → email"])
+```
+
 - **Context propagation:** OTel passes `traceparent` headers on outbound HTTP automatically; for the queue, we put trace context into job payloads (same slot as `reqId`) so a worker's spans attach to the originating request's trace. The full story — request → outbox → relay → worker → email API — is one trace.
 - **Sampling:** tracing everything at scale is expensive; head sampling (e.g. 10%) plus "always sample errors and slow requests" (tail-based, backend-dependent) keeps cost sane while keeping the interesting traces. Metrics (next) are the always-on layer; traces are the deep-dive layer.
 

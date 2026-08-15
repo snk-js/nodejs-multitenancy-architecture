@@ -93,6 +93,40 @@ await withTenantDb(async (db) => {
 //    marking each row published — itself idempotent (keyed by outbox row id)
 ```
 
+The complete reliable pipeline, with every crash window marked and answered:
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant API as API (request path)
+    participant PG as Postgres
+    participant REL as Relay
+    participant Q as Queue (Redis)
+    participant W as Worker
+
+    U->>API: POST /api/invites
+    API->>PG: BEGIN … INSERT membership + INSERT outbox … COMMIT
+    Note over API,PG: ONE transaction — both exist or neither ⚛️
+    API->>U: 201 (milliseconds; nobody waited for email infra)
+
+    loop every 2s
+        REL->>PG: SELECT outbox WHERE published_at IS NULL
+        REL->>Q: enqueue job {tenantId, payload}
+        REL->>PG: UPDATE outbox SET published_at = now()
+        Note over REL: 💥 crash between enqueue and mark →<br/>row re-published next tick (at-least-once)
+    end
+
+    Q->>W: deliver job (maybe TWICE — that's the contract)
+    W->>PG: re-validate tenant 🛡️ (suspended? deleted?)
+    W->>PG: INSERT processed_jobs(key) ON CONFLICT DO NOTHING
+    alt key was new
+        W->>W: send the email (the actual effect, ONCE)
+    else key existed
+        W->>W: duplicate delivery → ack silently
+    end
+    Note over Q,W: 💥 handler throws → retry w/ backoff ×5 →<br/>failed set (DLQ): inspect, fix, re-drive
+```
+
 Now the two outcomes are the only outcomes: *both* the membership and its event exist, or *neither* does. The relay might publish twice (crash between publish and mark) — and §9.3 already made consumers immune to that. The patterns compose: **outbox gives at-least-once out of your transaction; idempotency makes at-least-once equal exactly-once-in-effect.** This pair is the backbone of every reliable event-driven system you'll meet; you now own both halves.
 
 ⚖️ Don't cargo-cult it, though: the outbox costs a table, a relay, and operational attention. Use it where a lost event is *unacceptable* (billing events, provisioning, anything contractual); plain enqueue is honest enough for a lost "weekly digest" email.

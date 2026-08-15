@@ -230,6 +230,31 @@ await withTransaction(async (tx) => {
 });
 ```
 
+The same-client rule and the leak trap, drawn:
+
+```mermaid
+sequenceDiagram
+    participant H as Handler
+    participant P as Pool (max: 10)
+    participant C as Client #7 (one TCP conn)
+    participant PG as Postgres
+
+    H->>P: pool.connect()
+    P->>H: client #7 (borrowed)
+    H->>C: BEGIN
+    C->>PG: BEGIN
+    H->>C: INSERT tasks … (same client!)
+    H->>C: INSERT audit_events … (same client!)
+    alt fn() succeeds
+        H->>C: COMMIT
+    else fn() throws
+        H->>C: ROLLBACK
+        Note over H: error re-thrown to caller
+    end
+    H->>P: client.release() — in finally, ALWAYS
+    Note over P: forget release() → connection leaked forever;<br/>leak 10 of them → every request hangs at connect()<br/>and "the database looks down" while it's fine
+```
+
 Three traps this helper permanently defuses:
 
 - 🛡️ **All statements must run on the same client.** `pool.query()` grabs *any* free connection — `BEGIN` on one connection and `INSERT` on another are unrelated conversations, and your "transaction" silently isn't one. This is among the most common serious pg mistakes in the wild.

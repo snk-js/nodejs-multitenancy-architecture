@@ -197,7 +197,30 @@ Without the check, the first command serves **your server's source code** and th
 
 Also note **`createReadStream(...).pipe(res)`**: the file streams to the socket chunk by chunk. `readFile` into memory would work for a 3 KB CSS file and fall over on a 3 GB video — streams are how Node moves large data with small memory. This is the same stream concept from Epoch 00, now doing real work.
 
-## 1.6 The reckoning: what this epoch actually taught
+## 1.6 The shape we just built, in one picture
+
+Every framework you'll ever meet is this flowchart with better ergonomics — including the property that **every path ends in a response**:
+
+```mermaid
+flowchart TD
+    A["request arrives"] --> B["parse URL<br/>(WHATWG URL, never string-match)"]
+    B --> C{"method + pathname?"}
+    C -->|"GET /health"| H["200 JSON"]
+    C -->|"GET /api/tasks"| L["200 task list"]
+    C -->|"POST /api/tasks"| BD["readJsonBody<br/>content-type check · 100KiB cap · JSON.parse in try"]
+    BD -->|invalid| E4["400 / 413 / 415"]
+    BD -->|valid| V{"title valid?"}
+    V -->|no| E4b["400"]
+    V -->|yes| CR["mutate state → 201"]
+    C -->|"GET /public/*"| ST["serveStatic<br/>resolve → startsWith(PUBLIC_DIR) 🛡️"]
+    ST -->|escapes root| E404["404 (traversal blocked)"]
+    ST -->|inside root| F["stream file → 200"]
+    C -->|anything else| E404b["404"]
+    CR & L & H & F & E4 & E4b & E404 & E404b --> Z(["res ended — ALWAYS"])
+    X["any thrown error"] -.-> EH["try/catch funnel:<br/>HttpError→its status · else 500 generic"] -.-> Z
+```
+
+## 1.7 The reckoning: what this epoch actually taught
 
 Run the app; it genuinely works. Now audit what it cost. To add *five endpoints* we hand-wrote:
 
@@ -212,7 +235,7 @@ Run the app; it genuinely works. Now audit what it cost. To add *five endpoints*
 
 None of this was wasted: these six rows are the **evaluation checklist for any web framework**, and you now own it from experience. A framework is not magic — it is this table, written by people who've been burned longer than you, hardened by a decade of issues.
 
-## 1.7 ⚖️ Decision log
+## 1.8 ⚖️ Decision log
 
 | Decision | Alternatives | Why |
 |---|---|---|
@@ -220,7 +243,7 @@ None of this was wasted: these six rows are the **evaluation checklist for any w
 | `Map` for storage | SQLite, files, Postgres now | One pain at a time. Persistence deserves its own epoch (03), not a footnote. |
 | Manual 100 KiB body cap | No cap | Unbounded buffering of client input is a self-inflicted DoS. This number survives into our framework config later. |
 
-## 1.8 Checkpoint
+## 1.9 Checkpoint
 
 1. Why must the body reader enforce a byte limit *while chunks arrive*, rather than checking `content-length` alone? (Hint: is the header trustworthy? Is it even required?)
 2. Explain path traversal to a rubber duck: what does `path.resolve(PUBLIC_DIR, "../etc/passwd")` return, and why does the `startsWith` check stop it?

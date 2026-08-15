@@ -67,6 +67,23 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 
 The order is the content: **readiness off → drain → close resources → exit**, with a hard deadline shorter than the platform's. Epoch 00's little `SIGINT` handler was this pattern's seed; Epoch 09 adds "stop claiming new jobs, finish current ones" for workers.
 
+```mermaid
+stateDiagram-v2
+    [*] --> Serving
+    Serving --> Draining: SIGTERM (deploy / scale-down)
+    state Draining {
+        [*] --> ReadinessOff: /health/ready → 503<br/>LB stops routing new traffic
+        ReadinessOff --> InFlightFinish: app.close() — existing<br/>requests run to completion
+        InFlightFinish --> ResourcesClosed: pool.end(), redis.quit()<br/>ONLY after requests are done
+    }
+    Draining --> Exit0: clean — exit(0)
+    Draining --> Exit1: 25s backstop hit — exit(1)<br/>(still before the platform's 30s SIGKILL)
+    Serving --> Exit1b: uncaughtException / unhandledRejection<br/>🛡️ unknown state → die, restart clean
+    Exit0 --> [*]
+    Exit1 --> [*]
+    Exit1b --> [*]
+```
+
 Related process-level policy: 🛡️ **crash on truly unknown errors.** `uncaughtException`/`unhandledRejection` → log, then exit. A process that limps on past an unknown exception is in undefined state — corrupt in ways you can't enumerate. Let it die; the supervisor restarts clean. "Keep it alive at all costs" is how you get the 3-week-old zombie process that serves one stale response per hour.
 
 ## 8.4 Health: liveness vs readiness (they are not the same question)

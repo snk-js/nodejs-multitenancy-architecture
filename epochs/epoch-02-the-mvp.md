@@ -185,7 +185,30 @@ Two guardrails baked in:
 
 🛡️ **Async errors are caught too.** Because Fastify handlers are promises it owns, a `throw` anywhere inside `async` handler code lands here. Recall how fragile that guarantee was to hand-build in Epoch 01 — this funnel plus schemas is most of what we adopted a framework *for*.
 
-## 2.6 The shape of the project
+## 2.6 The request pipeline you just bought
+
+What Fastify runs for every request — each stage is a row from Epoch 01's table, now framework-owned. Nothing reaches your handler un-validated, and nothing escapes without a response:
+
+```mermaid
+flowchart LR
+    subgraph pipeline ["Fastify request pipeline"]
+        direction TB
+        R["route match<br/>(radix tree)"] --> BP["body parse<br/>bodyLimit: 100KiB"]
+        BP --> VAL["schema validation<br/>compiled Ajv · additionalProperties:false"]
+        VAL --> H["YOUR HANDLER<br/>(assumes valid input)"]
+        H --> SER["response serialization<br/>schema strips unlisted fields 🛡️"]
+    end
+    REQ(["request"]) --> R
+    SER --> RES(["response"])
+    R -.->|no match| NF["setNotFoundHandler → 404"]
+    BP -.->|too big / bad JSON| EH
+    VAL -.->|invalid| EH["setErrorHandler<br/>validation→400 · 4xx→specific msg<br/>5xx→generic msg + rich log 🛡️"]
+    H -.->|any throw, sync or async| EH
+    NF --> RES
+    EH --> RES
+```
+
+## 2.7 The shape of the project
 
 ```
 trellis/
@@ -202,14 +225,14 @@ trellis/
 
 Small, but each boundary is doing real work: *environment access is quarantined in `config.js`*, *network is quarantined in `server.js`*, *everything else is testable pure construction*. Routes will thin out further in Epoch 03 when a service/repository layer appears beneath them — the rule that emerges: **route files translate HTTP ↔ domain, and nothing else.**
 
-## 2.7 💥 Break it yourself
+## 2.8 💥 Break it yourself
 
 1. `POST /api/tasks` with `{"title": ""}`, with `{"title": 42}`, with `{}`, and with `{"title":"x","hacker":true}` — read the four different 400s. You wrote none of that handling.
 2. Send a 200 KiB body. Fastify answers `413` — Epoch 01's guardrail, now config.
 3. Throw `new Error("boom: /home/deploy/src/secret.js")` inside a handler. Confirm the client sees only `internal server error` while the log line has the stack, the message, and a `reqId`.
 4. In the response schema, remove `done` from `properties`, restart, and `GET /api/tasks`: the field vanishes from output. That's the leak guard working in miniature.
 
-## 2.8 ⚖️ Decision log
+## 2.9 ⚖️ Decision log
 
 | Decision | Alternatives | Why |
 |---|---|---|
@@ -218,7 +241,7 @@ Small, but each boundary is doing real work: *environment access is quarantined 
 | `buildApp()`/`server.js` split | Single entry script | Testability without ports; the single most copied pattern in this course |
 | Config module, frozen, boot-validated | Scattered `process.env` reads | One inventory of environmental needs; failures at boot instead of mid-request |
 
-## 2.9 Checkpoint
+## 2.10 Checkpoint
 
 1. What is mass assignment, and which single schema keyword shuts it down?
 2. Why do response schemas make responses *safer*, not just documented?
