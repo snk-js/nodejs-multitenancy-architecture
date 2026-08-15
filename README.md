@@ -38,6 +38,11 @@ By the final epoch you will have, purely by reading and building along, a comple
 | 11 | [Shipping](epochs/epoch-11-shipping.md) | Code on a laptop | Multi-stage Docker, CI gates, expand/contract migrations, zero-downtime deploys, security hardening |
 | 12 | [The Capstone Architecture](epochs/epoch-12-capstone.md) | All the pieces | The complete blueprint: final tree, request lifecycle, the full decision log, and the 10× scaling roadmap |
 
+## Beyond the epochs
+
+- **[`code/`](code/README.md)** — a runnable snapshot of Trellis per epoch. Each directory is the previous one plus that epoch's changes, so the evolution itself is diffable: `diff -ru code/epoch-06 code/epoch-07` shows RLS arriving, line by line.
+- **[`deep-dives/`](deep-dives/README.md)** — research-backed extensions: advanced auth architectures (OAuth 2.1, BFF, enterprise SSO/SCIM, passkeys), the backend's job in a microfrontend world (assets, version skew, federation vs zones), and what modern Next.js solves for multitenancy & microfrontends.
+
 ## How to use this course
 
 - **Read in order.** Epochs deliberately depend on the pain of previous ones. Skipping ahead gives you answers without questions.
