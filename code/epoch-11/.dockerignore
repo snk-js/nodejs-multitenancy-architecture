@@ -1,0 +1,9 @@
+# 🛡️ What enters an image's layers is effectively public to anyone who can
+# pull it. Secrets arrive at runtime from the platform — never at build time.
+node_modules
+.env
+.env.*
+.git
+test
+jar.txt
+README.md

@@ -1,0 +1,46 @@
+# Red blocks merge. A failing check you can override is a suggestion in uniform.
+# (Illustrative placement: in a real repo this lives at the repository root.)
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: trellis
+          POSTGRES_PASSWORD: trellis
+          POSTGRES_DB: trellis
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U trellis"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+
+    env:
+      DATABASE_URL: postgres://trellis:trellis@localhost:5432/trellis
+      MIGRATIONS_DATABASE_URL: postgres://trellis:trellis@localhost:5432/trellis
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run migrate
+      # includes the tenant-isolation + RLS suites — the crown jewels are
+      # re-proven on every commit, forever
+      - run: npm test
+      # your app is mostly other people's code: known-CVE gate
+      - run: npm audit --omit=dev --audit-level=high
+      # the artifact builds, typechecked inside it too
+      - run: docker build .
