@@ -1,0 +1,22 @@
+# One entry point for the whole lab, like a production load balancer.
+# *.localtest.me resolves to 127.0.0.1 with zero DNS setup, so tenant
+# subdomains exercise the real Epoch 06 resolution path locally.
+{
+	auto_https off
+	admin off
+}
+
+:8080 {
+	# Compose's internal DNS round-robins across the two api replicas —
+	# so every request may land on a different instance, exactly like prod.
+	reverse_proxy api:3000 {
+		header_up Host {host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

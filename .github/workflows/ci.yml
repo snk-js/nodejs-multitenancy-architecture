@@ -1,0 +1,177 @@
+# Course CI — the code in this repo is teaching material, so it must never rot.
+# Every snapshot typechecks and tests on every push; every internal doc link resolves.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  docs:
+    name: docs — internal links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: node scripts/check-links.mjs
+
+  zero-dep-snapshots:
+    name: snapshots 00–01 (no dependencies)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        epoch: [epoch-00, epoch-01]
+    defaults:
+      run:
+        working-directory: code/${{ matrix.epoch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - name: boot the server and probe it
+        run: |
+          PORT=3999 node server.js &
+          # both snapshots serve HTML at / (epoch-00 has no /health yet)
+          for i in $(seq 1 20); do curl -sf -o /dev/null "http://localhost:3999/" && break || sleep 0.25; done
+          curl -sf -o /dev/null "http://localhost:3999/"
+          kill %1
+
+  epoch-01-security:
+    name: snapshot 01 — path traversal is blocked
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: code/epoch-01
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - name: the guardrail must hold
+        run: |
+          PORT=3999 node server.js &
+          for i in $(seq 1 20); do curl -sf -o /dev/null "http://localhost:3999/" && break || sleep 0.25; done
+          code=$(curl -s --path-as-is -o /dev/null -w "%{http_code}" "http://localhost:3999/public/../server.js")
+          echo "traversal probe → $code"
+          test "$code" = "404" || { echo "PATH TRAVERSAL NOT BLOCKED"; exit 1; }
+          kill %1
+
+  fastify-snapshot:
+    name: snapshot 02 (in-memory)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: code/epoch-02
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm, cache-dependency-path: code/epoch-02/package-lock.json }
+      - run: npm ci
+      - name: schema validation rejects unknown fields
+        run: |
+          PORT=3999 node src/server.js &
+          for i in $(seq 1 20); do curl -sf -o /dev/null "http://localhost:3999/health" && break || sleep 0.25; done
+          bad=$(curl -s -o /dev/null -w "%{http_code}" -X POST localhost:3999/api/tasks \
+            -H "content-type: application/json" -d '{"title":"x","hacker":true}')
+          ok=$(curl -s -o /dev/null -w "%{http_code}" -X POST localhost:3999/api/tasks \
+            -H "content-type: application/json" -d '{"title":"real"}')
+          echo "unknown-field → $bad ; valid → $ok"
+          test "$bad" = "400" && test "$ok" = "201"
+          kill %1
+
+  db-snapshots:
+    name: snapshot ${{ matrix.epoch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        epoch: [epoch-03, epoch-04]
+    defaults:
+      run:
+        working-directory: code/${{ matrix.epoch }}
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: trellis
+          POSTGRES_PASSWORD: trellis
+          POSTGRES_DB: trellis
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U trellis"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://trellis:trellis@localhost:5432/trellis
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: code/${{ matrix.epoch }}/package-lock.json
+      - run: npm ci
+      - run: npm run migrate
+      - name: smoke the API against a real database
+        run: |
+          PORT=3999 node src/server.js &
+          for i in $(seq 1 20); do curl -sf -o /dev/null "http://localhost:3999/health" && break || sleep 0.25; done
+          curl -sf -o /dev/null "http://localhost:3999/health"
+          kill %1
+
+  typed-snapshots:
+    name: snapshot ${{ matrix.epoch }} — typecheck + tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        epoch: [epoch-05, epoch-06, epoch-07, epoch-08, epoch-09, epoch-10, epoch-11]
+    defaults:
+      run:
+        working-directory: code/${{ matrix.epoch }}
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: trellis
+          POSTGRES_PASSWORD: trellis
+          POSTGRES_DB: trellis
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U trellis"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      NODE_ENV: test
+      # tests run as the owner; FORCE ROW LEVEL SECURITY (epoch-07+) keeps
+      # policies applying to it, so the hostile suite still proves enforcement
+      DATABASE_URL: postgres://trellis:trellis@localhost:5432/trellis
+      MIGRATIONS_DATABASE_URL: postgres://trellis:trellis@localhost:5432/trellis
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: code/${{ matrix.epoch }}/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      # the suite provisions its own ephemeral schema per test file
+      - run: npm test
+
+  audit:
+    name: dependency audit (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true # advisory here; BLOCKING in the epoch-11 pipeline by design
+    strategy:
+      fail-fast: false
+      matrix:
+        epoch: [epoch-10, epoch-11]
+    defaults:
+      run:
+        working-directory: code/${{ matrix.epoch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: npm audit --omit=dev --audit-level=high

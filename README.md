@@ -41,6 +41,7 @@ By the final epoch you will have, purely by reading and building along, a comple
 ## Beyond the epochs
 
 - **[`code/`](code/README.md)** — a runnable snapshot of Trellis per epoch. Each directory is the previous one plus that epoch's changes, so the evolution itself is diffable: `diff -ru code/epoch-06 code/epoch-07` shows RLS arriving, line by line.
+- **[`local-lab/`](local-lab/README.md)** — the whole architecture on one laptop: two API replicas behind a proxy, a worker, Postgres behind a fault injector, tracing, and a Makefile of experiments that induce each failure mode from the course on demand (`make rls-check`, `make pool-exhaustion`, `make noisy-neighbor`, `make drain-drill`).
 - **[`deep-dives/`](deep-dives/README.md)** — six research-backed extensions: advanced auth architectures (OAuth 2.1, BFF, enterprise SSO/SCIM, passkeys) · the backend's job in a microfrontend world (assets, version skew, federation vs zones) · what modern Next.js solves for multitenancy & microfrontends · observability across the frontend boundary (tracing bugs across independently-deployed UIs) · infrastructure as code · and running the whole thing locally, with an experiment catalogue that makes every scalability failure reproducible on a laptop.
 
 ## How to use this course

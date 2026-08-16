@@ -1,0 +1,120 @@
+# The lab: the whole architecture on one laptop, wired so that every failure
+# mode in the course can be induced on demand. Companion to
+# deep-dives/06-running-it-all-locally.md
+#
+#   make up        bring it all up          make seed      realistic data
+#   make traces    open Jaeger              make experiments   list the lab manual
+name: trellis-lab
+
+services:
+  # ---------------------------------------------------------------- data tier
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: trellis
+      POSTGRES_PASSWORD: trellis
+      POSTGRES_DB: trellis
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trellis"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Postgres is reached THROUGH toxiproxy (port 25432) so latency, packet loss,
+  # and connection drops are one API call away. Costs nothing when idle.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.11.0
+    command: ["-host=0.0.0.0", "-config=/config/toxiproxy.json"]
+    volumes: ["./toxiproxy.json:/config/toxiproxy.json:ro"]
+    ports:
+      - "8474:8474"   # control API
+      - "25432:25432" # → db:5432
+    depends_on:
+      db: { condition: service_healthy }
+
+  # ------------------------------------------------------------ observability
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # UI
+      - "4318:4318"   # OTLP/HTTP
+
+  # ------------------------------------------------------- fake third parties
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025" # web UI — "did the invite email send?"
+      - "1025:1025" # SMTP
+
+  # ------------------------------------------------------------ application
+  # TWO replicas on purpose: a single instance hides every distributed bug
+  # (unshared rate-limit counters, cache races, connection arithmetic).
+  api:
+    build:
+      context: ../code/epoch-11
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      # through toxiproxy, as the RLS-subject app role
+      DATABASE_URL: postgres://trellis_app:trellis_app@toxiproxy:25432/trellis
+      MIGRATIONS_DATABASE_URL: postgres://trellis:trellis@db:5432/trellis
+      REDIS_URL: redis://redis:6379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: trellis-api
+      TRUST_PROXY: "true"
+      LOG_LEVEL: info
+    deploy:
+      replicas: 2
+    depends_on:
+      toxiproxy: { condition: service_started }
+      redis: { condition: service_healthy }
+
+  worker:
+    build:
+      context: ../code/epoch-11
+    command: ["npm", "run", "worker"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://trellis_app:trellis_app@toxiproxy:25432/trellis
+      REDIS_URL: redis://redis:6379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      OTEL_SERVICE_NAME: trellis-worker
+    depends_on:
+      toxiproxy: { condition: service_started }
+      redis: { condition: service_healthy }
+
+  # One entry point, like production: load-balances the two API replicas and
+  # gives us *.localtest.me subdomains for real tenant resolution.
+  proxy:
+    image: caddy:2-alpine
+    ports: ["8080:8080"]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
+    depends_on: [api]
+
+  # One-shot: applies migrations as the OWNER role (epoch-07's privilege split)
+  migrate:
+    build:
+      context: ../code/epoch-11
+    command: ["npm", "run", "migrate"]
+    environment:
+      MIGRATIONS_DATABASE_URL: postgres://trellis:trellis@db:5432/trellis
+      DATABASE_URL: postgres://trellis:trellis@db:5432/trellis
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+
+volumes:
+  pgdata:
